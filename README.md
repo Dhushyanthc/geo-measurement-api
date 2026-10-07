@@ -24,6 +24,39 @@ python -m venv .venv
 pip install -e ".[dev]"
 ```
 
+### Configuration
+
+Settings come from environment variables; every one has a default for local runs.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | `sqlite:///./app.db` | SQLAlchemy URL. For Postgres: `postgresql+psycopg://user:pass@host:5432/db` (install with `pip install -e ".[postgres]"`) |
+| `STORAGE_DIR` | `./storage` | Where uploads wait until they are processed; cleaned after each job |
+| `MAX_UPLOAD_MB` | `25` | Largest accepted upload |
+| `MAX_UNCOMPRESSED_MB` | `100` | Cap on the total uncompressed size of a zip |
+| `MAX_ZIP_ENTRIES` | `100` | Cap on the number of entries in a zip |
+
+Create the tables (safe to run again; existing tables are left alone):
+
+```bash
+python -m app.db
+```
+
+## Run tests
+
+```bash
+pytest
+ruff check .
+ruff format --check .
+```
+
+Tests use a temporary SQLite database by default. To run the same suite against Postgres, point
+`TEST_DATABASE_URL` at an empty database (its tables are dropped and recreated for every test):
+
+```bash
+TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/geo_test pytest
+```
+
 ## Architecture
 
 ### File processing

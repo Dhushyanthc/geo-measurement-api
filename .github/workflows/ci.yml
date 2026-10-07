@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    # A clean machine with no system GDAL: proves the pyogrio wheels are enough.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[dev]"
+      - run: pytest
+
+  postgres:
+    # The same suite against Postgres, the database used in Docker Compose.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: geo
+          POSTGRES_PASSWORD: geo
+          POSTGRES_DB: geo_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U geo -d geo_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://geo:geo@localhost:5432/geo_test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[dev,postgres]"
+      - run: pytest
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: docker build .
+      - name: Start the Compose stack and wait until healthy
+        run: docker compose up --build --detach --wait --wait-timeout 120
+      - name: README flow against the stack (upload, poll, measurements)
+        run: |
+          for sample in samples/sample.kml samples/sample_shapefile.zip; do
+            ID=$(curl -sf -F "file=@$sample" http://localhost:8000/api/files/ \
+              | python -c "import json, sys; print(json.load(sys.stdin)['id'])")
+            for attempt in $(seq 60); do
+              STATUS=$(curl -sf http://localhost:8000/api/files/$ID/ \
+                | python -c "import json, sys; print(json.load(sys.stdin)['status'])")
+              if [ "$STATUS" != PENDING ] && [ "$STATUS" != PROCESSING ]; then break; fi
+              sleep 1
+            done
+            echo "$sample: $STATUS"
+            test "$STATUS" = COMPLETED
+            curl -sf "http://localhost:8000/api/files/$ID/measurements/?limit=100&offset=0"
+            echo
+          done
+          curl -sf http://localhost:8000/health
+      - name: Compose logs
+        if: failure()
+        run: docker compose logs
+      - name: Stop the stack
+        if: always()
+        run: docker compose down --volumes

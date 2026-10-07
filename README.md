@@ -92,7 +92,12 @@ The examples below use the files in [`samples/`](samples/), which
 The whole flow, copy-pasteable (bash; the id is captured from the upload response):
 
 ```bash
-ID=$(curl -s -F "file=@samples/sample.kml" http://localhost:8000/api/files/   | python -c "import json, sys; print(json.load(sys.stdin)['id'])")
+ID=$(curl -s -F "file=@samples/sample.kml" http://localhost:8000/api/files/ \
+  | python -c "import json, sys; print(json.load(sys.stdin)['id'])")
+# Processing runs in the background: poll until the file is COMPLETED or FAILED.
+until curl -s http://localhost:8000/api/files/$ID/ | grep -qE '"status":"(COMPLETED|FAILED)"'; do
+  sleep 1
+done
 curl -s http://localhost:8000/api/files/$ID/
 curl -s "http://localhost:8000/api/files/$ID/measurements/?limit=100&offset=0"
 ```

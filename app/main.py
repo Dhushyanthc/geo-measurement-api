@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from app.api import files
+from app.api import files, health
 from app.config import Settings
 from app.db import init_db, make_engine, make_session_factory
 from app.storage import too_large_message
@@ -69,6 +69,7 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.session_factory = make_session_factory(app.state.engine)
     app.add_middleware(UploadSizeLimit, max_upload_bytes=settings.max_upload_bytes)
     app.include_router(files.router)
+    app.include_router(health.router)
     return app
 
 

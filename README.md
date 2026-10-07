@@ -87,11 +87,75 @@ location: /api/files/3bdc269a-f272-4d85-8dee-ed2347db4e09/
  "crs": null, "status": "PENDING", "error": null}
 ```
 
+### Poll: `GET /api/files/{id}/`
+
+Poll the `Location` URL until `status` is `COMPLETED` or `FAILED` (`PENDING` and `PROCESSING`
+come first). `crs` is the source file's CRS; `error` explains a `FAILED` file.
+
+```bash
+curl http://localhost:8000/api/files/3bdc269a-f272-4d85-8dee-ed2347db4e09/
+```
+
+```json
+{"id": "3bdc269a-f272-4d85-8dee-ed2347db4e09", "filename": "survey.kml", "feature_count": 1,
+ "crs": "EPSG:4326", "status": "COMPLETED", "error": null}
+```
+
+### Measurements: `GET /api/files/{id}/measurements/?limit=100&offset=0`
+
+One entry per feature, ordered by `index`. `limit` is 1 to 1000 (default 100) and `offset` is 0
+or more; `total` is the file's feature count. `geometry` is GeoJSON in EPSG:4326 whatever the
+source CRS, and `source_crs` records what the file used. `measurement.crs` is the UTM zone the
+feature was measured in.
+
+```bash
+curl "http://localhost:8000/api/files/3bdc269a-f272-4d85-8dee-ed2347db4e09/measurements/?limit=100&offset=0"
+```
+
+```json
+{
+  "file_id": "3bdc269a-f272-4d85-8dee-ed2347db4e09",
+  "total": 1, "limit": 100, "offset": 0,
+  "features": [{
+    "index": 0, "layer": "Plots", "geometry_type": "Polygon", "source_crs": "EPSG:4326",
+    "properties": {"id": null, "Name": "Plot A", "description": null,
+                   "timestamp": null, "begin": null, "end": null},
+    "geometry": {"type": "Polygon", "coordinates": [[[77.5993403, 12.96770037],
+                 [77.59943417, 12.97673375], [77.59022297, 12.97682568],
+                 [77.59012943, 12.96779224], [77.5993403, 12.96770037]]]},
+    "measurement": {"status": "MEASURED", "area_m2": 999999.7293389837, "length_m": null,
+                    "crs": "EPSG:32643", "reason": null, "warnings": []}
+  }]
+}
+```
+
+`measurement.status` is one of:
+
+| Status | Meaning |
+|---|---|
+| `MEASURED` | Polygon: `area_m2` set. Line: `length_m` set. |
+| `NO_MEASUREMENT_REQUIRED` | Point or MultiPoint; both numbers are `null`. |
+| `INVALID` | Self-intersecting or otherwise invalid polygon; `reason` says why, numbers are `null`. |
+| `UNSUPPORTED` | Cannot be measured (no geometry, mixed GeometryCollection, polar, crosses the antimeridian, ...); `reason` says why. |
+
+### Health: `GET /health`
+
+Runs `SELECT 1` against the database: **200** `{"status": "ok"}`, or **503**
+`{"status": "unavailable"}` when the database cannot be reached. Used by Docker and load
+balancer health checks.
+
+### Errors
+
+Errors use FastAPI's `{"detail": "..."}` body. Messages never include server paths.
+
 | Situation | Code |
 |---|---|
 | Wrong extension, corrupt zip, no or several `.shp`, missing `.shx`/`.dbf`/`.prj`, unsafe zip | 400 |
+| Unknown file id | 404 |
+| Measurements requested while `PENDING`/`PROCESSING` (with `Retry-After: 1`) or after `FAILED` | 409 |
 | Upload larger than `MAX_UPLOAD_MB` | 413 |
-| No `file` field | 422 |
+| Missing `file` field, bad `limit`/`offset` | 422 |
+| Database unreachable (`/health` only) | 503 |
 
 Oversized uploads are rejected from the `Content-Length` header before the body is read; a
 byte count while saving is the backstop for requests without that header. In production,

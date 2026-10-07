@@ -472,6 +472,40 @@ Migrations are in the future scope.
 - Tables are created with `create_all`, and there are no migrations.
 - There's no authentication or rate limiting.
 
+## Learning
+
+**Coordinates aren't distances.** Lat/lon looks like an x/y grid, but it isn't one. A degree of
+longitude is about 108 km wide in Bengaluru and about 56 km at 60°N, so any area computed
+straight from degrees is meaningless. Being "in metres" isn't enough either. Web Mercator data
+looks projected, yet it overstates area by about 5% even at Bengaluru's latitude. That's why
+every input goes through the same path to a local UTM zone, and why the tests check against a
+square whose true area I already know.
+
+**Axis order bites quietly.** EPSG:4326 officially lists latitude first, and KML writes
+longitude first. A swapped transform doesn't crash; it just puts Bengaluru somewhere in the
+Arctic. Using `always_xy=True` everywhere, and writing a test that checks the chosen zone is
+43N, turned a silent bug into a loud one.
+
+**GDAL doesn't always do what you'd expect.** A KML `<MultiGeometry>` is usually described as
+arriving as a GeometryCollection, but for polygons LIBKML returns a MultiPolygon. That's why
+validity is checked per part: shapely calls two fields sharing an edge an invalid MultiPolygon.
+I also found that LIBKML adds display settings to every feature as if they were attributes, and
+that it drops untyped `<Data>` when a file also declares a `<Schema>`. Testing against small
+hand-written files was the only way to find these out.
+
+**An uploaded zip is untrusted input.** Zip-slip paths, symlinks and zip bombs are all real
+attacks on an upload endpoint. The simplest defence turned out to be not trusting the archive's
+names at all: copy the few files I need to fixed names and count the bytes while copying. Tests
+also caught a case that's easy to miss: damaged compressed data raises `zlib.error`, not
+`BadZipFile`, so it needed its own handling to come back as a clean 400.
+
+**Where the request body actually gets read.** The obvious place to enforce the upload limit is
+the route, but Starlette reads the whole multipart body before the route runs, so the check has
+to happen earlier, from the `Content-Length` header in middleware. Moving the processing into a
+background job also taught me what that costs. `BackgroundTasks` isn't durable, two dispatches
+of the same job need an atomic claim so they don't both run, and error messages need care,
+because GDAL's include the server's file paths.
+
 ## Future scope
 
 - A durable job queue with retries (Celery, RQ or arq), plus something that picks up jobs stuck

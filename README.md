@@ -68,6 +68,23 @@ TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/geo_test pytest
 
 Measurements are in metres (`length_m`) and square metres (`area_m2`).
 
+The examples below use the files in [`samples/`](samples/), which
+`python scripts/make_samples.py` regenerates:
+
+- `sample.kml`: two folders near Bengaluru. *Plots* holds an 8,000 m² plot with
+  `<ExtendedData>` and a MultiGeometry of two 2,500 m² fields sharing an edge; *Infrastructure*
+  holds a 210 m road and a well.
+- `sample_shapefile.zip`: three fields in EPSG:32643 (UTM 43N) with an ESRI-style `.prj`. One has
+  a 20 m x 20 m pond (a hole); one has a self-intersecting boundary.
+
+The whole flow, copy-pasteable (bash; the id is captured from the upload response):
+
+```bash
+ID=$(curl -s -F "file=@samples/sample.kml" http://localhost:8000/api/files/   | python -c "import json, sys; print(json.load(sys.stdin)['id'])")
+curl -s http://localhost:8000/api/files/$ID/
+curl -s "http://localhost:8000/api/files/$ID/measurements/?limit=100&offset=0"
+```
+
 ### Upload: `POST /api/files/`
 
 Send the file as multipart field `file`: a `.kml`, or a `.zip` holding one Shapefile.
@@ -76,14 +93,15 @@ Accepted** and status `PENDING`. Reading and measuring happen in the background;
 `Location` header is the URL to poll.
 
 ```bash
-curl -i -F "file=@survey.kml" http://localhost:8000/api/files/
+curl -i -F "file=@samples/sample.kml" http://localhost:8000/api/files/
+curl -i -F "file=@samples/sample_shapefile.zip" http://localhost:8000/api/files/
 ```
 
 ```http
 HTTP/1.1 202 Accepted
-location: /api/files/3bdc269a-f272-4d85-8dee-ed2347db4e09/
+location: /api/files/2446a85c-11d5-458c-9e9c-380c12c6e9ff/
 
-{"id": "3bdc269a-f272-4d85-8dee-ed2347db4e09", "filename": "survey.kml", "feature_count": 0,
+{"id": "2446a85c-11d5-458c-9e9c-380c12c6e9ff", "filename": "sample.kml", "feature_count": 0,
  "crs": null, "status": "PENDING", "error": null}
 ```
 
@@ -93,13 +111,15 @@ Poll the `Location` URL until `status` is `COMPLETED` or `FAILED` (`PENDING` and
 come first). `crs` is the source file's CRS; `error` explains a `FAILED` file.
 
 ```bash
-curl http://localhost:8000/api/files/3bdc269a-f272-4d85-8dee-ed2347db4e09/
+curl http://localhost:8000/api/files/2446a85c-11d5-458c-9e9c-380c12c6e9ff/
 ```
 
 ```json
-{"id": "3bdc269a-f272-4d85-8dee-ed2347db4e09", "filename": "survey.kml", "feature_count": 1,
+{"id": "2446a85c-11d5-458c-9e9c-380c12c6e9ff", "filename": "sample.kml", "feature_count": 4,
  "crs": "EPSG:4326", "status": "COMPLETED", "error": null}
 ```
+
+For the shapefile, `crs` is `"EPSG:32643"`, identified from the ESRI WKT in its `.prj`.
 
 ### Measurements: `GET /api/files/{id}/measurements/?limit=100&offset=0`
 
@@ -109,24 +129,31 @@ source CRS, and `source_crs` records what the file used. `measurement.crs` is th
 feature was measured in.
 
 ```bash
-curl "http://localhost:8000/api/files/3bdc269a-f272-4d85-8dee-ed2347db4e09/measurements/?limit=100&offset=0"
+curl "http://localhost:8000/api/files/2446a85c-11d5-458c-9e9c-380c12c6e9ff/measurements/?limit=1"
 ```
 
 ```json
 {
-  "file_id": "3bdc269a-f272-4d85-8dee-ed2347db4e09",
-  "total": 1, "limit": 100, "offset": 0,
+  "file_id": "2446a85c-11d5-458c-9e9c-380c12c6e9ff",
+  "total": 4, "limit": 1, "offset": 0,
   "features": [{
     "index": 0, "layer": "Plots", "geometry_type": "Polygon", "source_crs": "EPSG:4326",
-    "properties": {"id": null, "Name": "Plot A", "description": null,
-                   "timestamp": null, "begin": null, "end": null},
-    "geometry": {"type": "Polygon", "coordinates": [[[77.5993403, 12.96770037],
-                 [77.59943417, 12.97673375], [77.59022297, 12.97682568],
-                 [77.59012943, 12.96779224], [77.5993403, 12.96770037]]]},
-    "measurement": {"status": "MEASURED", "area_m2": 999999.7293389837, "length_m": null,
+    "properties": {"id": null, "Name": "Plot A", "description": null, "timestamp": null,
+                   "begin": null, "end": null, "owner": "Asha", "crop": "rice"},
+    "geometry": {"type": "Polygon", "coordinates": [[[77.5901294, 12.9677922],
+                 [77.5901369, 12.9685149], [77.591058, 12.9685057],
+                 [77.5910505, 12.9677831], [77.5901294, 12.9677922]]]},
+    "measurement": {"status": "MEASURED", "area_m2": 7999.79070555905, "length_m": null,
                     "crs": "EPSG:32643", "reason": null, "warnings": []}
   }]
 }
+```
+
+The self-intersecting field in the shapefile (`?offset=2&limit=1`) is reported, not measured:
+
+```json
+"measurement": {"status": "INVALID", "area_m2": null, "length_m": null, "crs": null,
+                "reason": "Self-intersection[77.5947582942158 12.970004698885]", "warnings": []}
 ```
 
 `measurement.status` is one of:

@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.config import Settings
 from app.db import init_db, make_engine, make_session_factory
 from app.models import Base
 
@@ -34,3 +35,8 @@ def engine(database_url: str) -> Iterator[Engine]:
 @pytest.fixture
 def session_factory(engine: Engine) -> sessionmaker[Session]:
     return make_session_factory(engine)
+
+
+@pytest.fixture
+def settings(database_url: str, tmp_path: Path) -> Settings:
+    return Settings(database_url=database_url, storage_dir=tmp_path / "storage")

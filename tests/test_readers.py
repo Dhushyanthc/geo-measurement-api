@@ -11,7 +11,7 @@ import shapely
 from app.core.crs import WGS84, to_wgs84
 from app.core.measure import MeasureStatus, measure_geometry
 from app.core.readers import KML_DISPLAY_FIELDS, read_kml, read_shapefile, to_json_safe
-from app.core.ziputil import extract_shapefile
+from app.core.ziputil import InvalidUpload, extract_shapefile
 from tests.factories import (
     BENGALURU_UTM,
     from_utm,
@@ -220,7 +220,7 @@ def test_shapefile_with_unreadable_prj_is_rejected(tmp_path: Path) -> None:
     parts = shapefile_parts([PLOT], pyproj.CRS.from_epsg(4326))
     parts[".prj"] = b"not a coordinate system"
 
-    with pytest.raises(ValueError, match="readable coordinate system"):
+    with pytest.raises(InvalidUpload, match="readable coordinate system"):
         read_zipped(tmp_path, parts)
 
 

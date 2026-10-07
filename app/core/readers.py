@@ -13,6 +13,7 @@ import shapely
 from pyogrio import raw
 
 from app.core.crs import WGS84, describe_crs
+from app.core.ziputil import InvalidUpload
 
 # LIBKML exposes these per-feature display settings as fields. They describe
 # how Google Earth draws a placemark, not attributes of the feature itself.
@@ -49,12 +50,12 @@ def read_kml(path: Path) -> ReadResult:
 def read_shapefile(shp_path: Path) -> ReadResult:
     """Read a Shapefile, taking its CRS from the .prj (EPSG or ESRI WKT).
 
-    Raises ValueError when GDAL cannot derive a CRS from the .prj; the file is
-    never measured under a guessed CRS.
+    Raises InvalidUpload when GDAL cannot derive a CRS from the .prj; the file
+    is never measured under a guessed CRS.
     """
     crs_text = pyogrio.read_info(shp_path)["crs"]
     if not crs_text:
-        raise ValueError("The shapefile's .prj does not describe a readable coordinate system.")
+        raise InvalidUpload("The shapefile's .prj does not describe a readable coordinate system.")
     crs = pyproj.CRS.from_user_input(crs_text)
     label = describe_crs(crs)
     definition = label if label.startswith("EPSG:") else crs.to_wkt()

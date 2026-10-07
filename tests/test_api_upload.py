@@ -3,6 +3,7 @@ from dataclasses import replace
 
 import pyproj
 import pytest
+import shapely
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -151,3 +152,69 @@ def test_size_limit_applies_only_to_the_upload_route(
     response = client.post("/api/other/", content=big)
 
     assert response.status_code == 404
+
+
+def test_forced_read_failure_is_visible_as_failed(
+    client: TestClient, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken_reader(path: object) -> None:
+        raise RuntimeError(f"disk on fire at {path}")
+
+    monkeypatch.setattr(service, "read_kml", broken_reader)
+
+    response = post(client, KML, "survey.kml")
+    file_id = response.json()["id"]
+    info = client.get(f"/api/files/{file_id}/").json()
+    measurements = client.get(f"/api/files/{file_id}/measurements/")
+
+    assert response.status_code == 202
+    assert (info["status"], info["error"]) == (
+        "FAILED",
+        "Unexpected error while processing the file.",
+    )
+    assert measurements.status_code == 409
+    assert measurements.json()["detail"] == (
+        "File processing failed: Unexpected error while processing the file."
+    )
+    assert storage_is_empty(settings)
+
+
+@pytest.mark.parametrize(
+    ("content", "filename", "error"),
+    [
+        (b"<kml>this is not closed", "broken.kml", "The file could not be read as a KML."),
+        (
+            shapefile_zip({**shapefile_parts([PLOT], None), ".prj": b"not a coordinate system"}),
+            "plots.zip",
+            "The shapefile's .prj does not describe a readable coordinate system.",
+        ),
+        (
+            shapefile_zip({**shapefile_parts([PLOT], pyproj.CRS.from_epsg(4326)), ".shp": b"junk"}),
+            "plots.zip",
+            "The file could not be read as a Shapefile.",
+        ),
+    ],
+    ids=["unparseable_kml", "unreadable_prj", "corrupt_shp"],
+)
+def test_files_that_fail_in_the_background_report_a_safe_error(
+    client: TestClient, settings: Settings, content: bytes, filename: str, error: str
+) -> None:
+    # These pass the cheap checks in the request (202) and fail while reading.
+    response = post(client, content, filename)
+    info = client.get(f"/api/files/{response.json()['id']}/").json()
+
+    assert response.status_code == 202
+    assert (info["status"], info["error"]) == ("FAILED", error)
+    assert str(settings.storage_dir) not in info["error"]
+    assert storage_is_empty(settings)
+
+
+def test_shapefile_with_bad_and_missing_geometries_still_completes(client: TestClient) -> None:
+    bowtie = shapely.Polygon([(77.59, 12.97), (77.60, 12.98), (77.60, 12.97), (77.59, 12.98)])
+    content = shapefile_zip(shapefile_parts([PLOT, bowtie, None], pyproj.CRS.from_epsg(4326)))
+
+    file_id = post(client, content, "plots.zip").json()["id"]
+    features = client.get(f"/api/files/{file_id}/measurements/").json()["features"]
+
+    assert [f["measurement"]["status"] for f in features] == ["MEASURED", "INVALID", "UNSUPPORTED"]
+    assert [f["properties"]["name"] for f in features] == ["f0", "f1", "f2"]

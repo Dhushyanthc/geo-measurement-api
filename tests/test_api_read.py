@@ -163,3 +163,77 @@ def test_measurements_of_failed_file_is_409_with_reason(
         "detail": "File processing failed: The file could not be read as a KML."
     }
     assert "Retry-After" not in response.headers
+
+
+def test_mixed_feature_file_gives_every_feature_a_status(client: TestClient) -> None:
+    # One file with every kind of awkward input. Nothing here may fail the file
+    # or cause a 500; each feature must come back with its own status.
+    x, y = BENGALURU_UTM
+    neighbour = from_utm(utm_square(1000, origin=(x + 1000, y)))
+    line = f"<LineString><coordinates>{kml_coords(ROAD)}</coordinates></LineString>"
+    bowtie = kml_polygon(
+        shapely.Polygon([(77.59, 12.97), (77.60, 12.98), (77.60, 12.97), (77.59, 12.98)])
+    )
+    with_altitude = " ".join(f"{lon:.8f},{lat:.8f},900" for lon, lat in PLOT.exterior.coords)
+    polygon_z = (
+        "<Polygon><outerBoundaryIs><LinearRing>"
+        f"<coordinates>{with_altitude}</coordinates>"
+        "</LinearRing></outerBoundaryIs></Polygon>"
+    )
+    points = (
+        "<MultiGeometry><Point><coordinates>77.59,12.97</coordinates></Point>"
+        "<Point><coordinates>77.60,12.98</coordinates></Point></MultiGeometry>"
+    )
+    content = kml_document(
+        kml_folder(
+            "Mixed",
+            kml_placemark("polygon", kml_polygon(PLOT)),
+            kml_placemark("line", line),
+            kml_placemark("point", "<Point><coordinates>77.59,12.97</coordinates></Point>"),
+            kml_placemark("bowtie", bowtie),
+            kml_placemark("no geometry"),
+            kml_placemark(
+                "twin",
+                f"<MultiGeometry>{kml_polygon(PLOT)}{kml_polygon(neighbour)}</MultiGeometry>",
+            ),
+            kml_placemark(
+                "polygon and line", f"<MultiGeometry>{kml_polygon(PLOT)}{line}</MultiGeometry>"
+            ),
+            kml_placemark("points", points),
+            kml_placemark("altitude", polygon_z),
+            kml_placemark("polar", kml_polygon(shapely.box(10, 85, 11, 86))),
+        )
+    ).encode()
+    file_id = upload(client, content)
+
+    info = client.get(f"/api/files/{file_id}/").json()
+    features = client.get(f"/api/files/{file_id}/measurements/").json()["features"]
+
+    assert (info["status"], info["feature_count"]) == ("COMPLETED", 10)
+    by_name = {f["properties"]["Name"]: f for f in features}
+    summary = {
+        name: (f["geometry_type"], f["measurement"]["status"]) for name, f in by_name.items()
+    }
+    assert summary == {
+        "polygon": ("Polygon", "MEASURED"),
+        "line": ("LineString", "MEASURED"),
+        "point": ("Point", "NO_MEASUREMENT_REQUIRED"),
+        "bowtie": ("Polygon", "INVALID"),
+        "no geometry": (None, "UNSUPPORTED"),
+        "twin": ("MultiPolygon", "MEASURED"),
+        "polygon and line": ("GeometryCollection", "UNSUPPORTED"),
+        "points": ("MultiPoint", "NO_MEASUREMENT_REQUIRED"),
+        "altitude": ("Polygon", "MEASURED"),
+        "polar": ("Polygon", "UNSUPPORTED"),
+    }
+    assert by_name["twin"]["measurement"]["area_m2"] == pytest.approx(2_000_000, rel=0.0025)
+    assert by_name["line"]["measurement"]["length_m"] == pytest.approx(500, rel=0.0025)
+    assert "Self-intersection" in by_name["bowtie"]["measurement"]["reason"]
+    assert by_name["bowtie"]["measurement"]["area_m2"] is None
+    assert by_name["no geometry"]["geometry"] is None
+    assert "LineString" in by_name["polygon and line"]["measurement"]["reason"]
+    assert "Polygon" in by_name["polygon and line"]["measurement"]["reason"]
+    assert by_name["altitude"]["measurement"]["warnings"] == ["Z_IGNORED"]
+    # GeoJSON keeps the altitude even though the measurement ignores it.
+    assert len(by_name["altitude"]["geometry"]["coordinates"][0][0]) == 3
+    assert "UTM range" in by_name["polar"]["measurement"]["reason"]

@@ -8,10 +8,11 @@ from typing import Any
 
 import numpy as np
 import pyogrio
+import pyproj
 import shapely
 from pyogrio import raw
 
-from app.core.crs import WGS84
+from app.core.crs import WGS84, describe_crs
 
 # LIBKML exposes these per-feature display settings as fields. They describe
 # how Google Earth draws a placemark, not attributes of the feature itself.
@@ -43,6 +44,22 @@ def read_kml(path: Path) -> ReadResult:
     """
     features = _read_layers(path, drop_fields=KML_DISPLAY_FIELDS)
     return ReadResult(file_crs=WGS84, crs_definition=WGS84, features=features)
+
+
+def read_shapefile(shp_path: Path) -> ReadResult:
+    """Read a Shapefile, taking its CRS from the .prj (EPSG or ESRI WKT).
+
+    Raises ValueError when GDAL cannot derive a CRS from the .prj; the file is
+    never measured under a guessed CRS.
+    """
+    crs_text = pyogrio.read_info(shp_path)["crs"]
+    if not crs_text:
+        raise ValueError("The shapefile's .prj does not describe a readable coordinate system.")
+    crs = pyproj.CRS.from_user_input(crs_text)
+    label = describe_crs(crs)
+    definition = label if label.startswith("EPSG:") else crs.to_wkt()
+    features = _read_layers(shp_path)
+    return ReadResult(file_crs=label, crs_definition=definition, features=features)
 
 
 def _read_layers(path: Path, drop_fields: frozenset[str] = frozenset()) -> list[RawFeature]:

@@ -4,11 +4,14 @@ from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
+import pyproj
 import pytest
 import shapely
 
+from app.core.crs import WGS84, to_wgs84
 from app.core.measure import MeasureStatus, measure_geometry
-from app.core.readers import KML_DISPLAY_FIELDS, read_kml, to_json_safe
+from app.core.readers import KML_DISPLAY_FIELDS, read_kml, read_shapefile, to_json_safe
+from app.core.ziputil import extract_shapefile
 from tests.factories import (
     BENGALURU_UTM,
     from_utm,
@@ -17,6 +20,8 @@ from tests.factories import (
     kml_folder,
     kml_placemark,
     kml_polygon,
+    shapefile_parts,
+    shapefile_zip,
     utm_square,
 )
 
@@ -153,6 +158,86 @@ def test_kml_placemark_without_geometry_is_kept(tmp_path: Path) -> None:
     assert [f.properties["Name"] for f in features] == ["Note", "Plot"]
     assert features[0].geometry is None
     assert [f.index for f in features] == [0, 1]
+
+
+def read_zipped(tmp_path: Path, parts: dict[str, bytes]):
+    """Zip the parts, extract them as an upload would be, and read the result."""
+    zip_path = tmp_path / "upload.zip"
+    zip_path.write_bytes(shapefile_zip(parts))
+    shp = extract_shapefile(
+        zip_path, tmp_path / "extracted", max_entries=10, max_uncompressed=10_000_000
+    )
+    return read_shapefile(shp)
+
+
+def in_crs(geom: shapely.Geometry, crs: pyproj.CRS) -> shapely.Geometry:
+    """Express an EPSG:4326 geometry in `crs`, as a GIS would write it to a shapefile."""
+    transformer = pyproj.Transformer.from_crs(WGS84, crs, always_xy=True)
+    return shapely.transform(geom, transformer.transform, interleaved=False)
+
+
+@pytest.mark.parametrize("epsg", [4326, 32643, 3857])
+@pytest.mark.parametrize("esri_prj", [False, True], ids=["gdal_prj", "esri_prj"])
+def test_shapefile_crs_comes_from_prj(tmp_path: Path, epsg: int, esri_prj: bool) -> None:
+    crs = pyproj.CRS.from_epsg(epsg)
+    parts = shapefile_parts([in_crs(PLOT, crs)], crs, esri_prj=esri_prj)
+
+    result = read_zipped(tmp_path, parts)
+
+    assert result.file_crs == f"EPSG:{epsg}"
+    assert result.crs_definition == f"EPSG:{epsg}"
+    assert [(f.index, f.layer) for f in result.features] == [(0, "data")]
+    assert result.features[0].properties == {"name": "f0"}
+
+
+def test_shapefile_in_web_mercator_measures_true_area(tmp_path: Path) -> None:
+    # A true 1 km² square delivered in EPSG:3857. Measured in Mercator metres it
+    # would come out about 5% high at 13°N; the pipeline goes via EPSG:4326 to UTM.
+    mercator = pyproj.CRS.from_epsg(3857)
+    parts = shapefile_parts([in_crs(PLOT, mercator)], mercator)
+    result = read_zipped(tmp_path, parts)
+
+    geoms = to_wgs84(np.array([f.geometry for f in result.features]), result.crs_definition)
+    measurement = measure_geometry(geoms[0])
+
+    # Same tolerance and reasoning as test_measure.TOLERANCE (UTM is not equal-area).
+    assert measurement.area_m2 == pytest.approx(1_000_000, rel=0.0025)
+
+
+def test_shapefile_with_unidentified_crs_keeps_full_wkt(tmp_path: Path) -> None:
+    custom = pyproj.CRS.from_proj4("+proj=tmerc +lat_0=0 +lon_0=78 +k=1 +x_0=0 +y_0=0 +ellps=WGS84")
+    parts = shapefile_parts([in_crs(PLOT, custom)], custom)
+
+    result = read_zipped(tmp_path, parts)
+
+    assert result.file_crs.startswith("WKT:")
+    assert pyproj.CRS.from_user_input(result.crs_definition).equals(custom)
+    geoms = to_wgs84(np.array([f.geometry for f in result.features]), result.crs_definition)
+    assert measure_geometry(geoms[0]).area_m2 == pytest.approx(1_000_000, rel=0.0025)
+
+
+def test_shapefile_with_unreadable_prj_is_rejected(tmp_path: Path) -> None:
+    parts = shapefile_parts([PLOT], pyproj.CRS.from_epsg(4326))
+    parts[".prj"] = b"not a coordinate system"
+
+    with pytest.raises(ValueError, match="readable coordinate system"):
+        read_zipped(tmp_path, parts)
+
+
+def test_shapefile_null_geometry_kept_and_properties_json_safe(tmp_path: Path) -> None:
+    fields = [("name", "C"), ("yield", "N", 10, 2), ("surveyed", "D")]
+    records = [("A", 1.5, date(2024, 5, 1)), ("B", None, None)]
+    parts = shapefile_parts(
+        [PLOT, None], pyproj.CRS.from_epsg(4326), fields=fields, records=records
+    )
+
+    features = read_zipped(tmp_path, parts).features
+
+    assert [f.index for f in features] == [0, 1]
+    assert features[1].geometry is None
+    assert features[0].properties == {"name": "A", "yield": 1.5, "surveyed": "2024-05-01"}
+    assert features[1].properties == {"name": "B", "yield": None, "surveyed": None}
+    json.dumps([f.properties for f in features], allow_nan=False)
 
 
 @pytest.mark.parametrize(

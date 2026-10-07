@@ -35,6 +35,13 @@ pip install -e ".[dev]"
      (`<Data>` and `<SchemaData>`) become properties. LIBKML's display settings (`tessellate`,
      `visibility`, `icon`, ...) are dropped because they are not attributes.
    - The CRS of a KML file is always EPSG:4326, as the KML specification requires.
+   - Shapefile: the zip must hold exactly one `.shp` with its `.shx`, `.dbf` and `.prj`
+     (`.cpg` optional) in the same folder. The CRS comes from the `.prj`, including the ESRI
+     WKT that ArcGIS writes; a missing or unreadable `.prj` is rejected rather than guessed.
+   - Zip safety: entry count and total uncompressed size are capped, paths with `..`, absolute
+     paths and symlinks are rejected, and the shapefile parts are copied to fixed names
+     (`data.shp`, ...) while counting the real bytes written, so nothing in the archive
+     chooses where files land.
 2. **Index.** Features are numbered globally from 0, in layer order and then feature order.
    A placemark without geometry is kept, so indices always match the source file.
 3. **Clean properties.** Attribute values are made JSON-safe: numpy scalars become Python

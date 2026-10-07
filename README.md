@@ -49,6 +49,18 @@ To create the tables up front instead (safe to run again; existing tables are le
 python -m app.db
 ```
 
+### Docker
+
+```bash
+docker compose up --build
+```
+
+This starts Postgres 16 and the API on `http://localhost:8000` with two uvicorn workers. The
+`api` container waits for Postgres to be healthy, creates the tables once with
+`python -m app.db`, then starts the workers, so they never race to create tables. Uploads wait
+in a named volume (`storage`) until processed. The image runs as a non-root user, and its
+`HEALTHCHECK` calls `GET /health`. The [API](#api) examples use the same address.
+
 ## Run tests
 
 ```bash

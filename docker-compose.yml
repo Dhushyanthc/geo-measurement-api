@@ -1,0 +1,39 @@
+# Local stack: the API (2 uvicorn workers) in front of Postgres.
+# The credentials are for this local stack only; set real ones in production.
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: geo
+      POSTGRES_PASSWORD: geo
+      POSTGRES_DB: geo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geo -d geo"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://geo:geo@db:5432/geo
+      STORAGE_DIR: /data/storage
+    # Create the tables once, before the workers start, so they never race to
+    # create them on an empty database.
+    command: >
+      sh -c "python -m app.db &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+    ports:
+      - "8000:8000"
+    volumes:
+      - storage:/data/storage
+
+volumes:
+  pgdata:
+  storage:

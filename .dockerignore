@@ -1,0 +1,26 @@
+# Only pyproject.toml, README.md and app/ are needed to build the image.
+.git
+.github
+.venv
+venv
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+build
+dist
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+app.db
+app.db-*
+storage
+.env
+tests
+samples
+scripts
+execution.md
+docker-compose.yml
+Dockerfile
+.vscode
+.idea

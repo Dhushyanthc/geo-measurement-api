@@ -2,17 +2,20 @@
 
 ## Overview
 
-A FastAPI service that accepts a KML file or a zipped Shapefile and extracts every feature with
-its geometry, properties and source CRS. Each polygon gets an area in square metres and each line a
-length in metres, measured after reprojecting into the feature's own UTM zone, never in degrees.
-Uploads are processed in the background: clients upload, poll for status, then page through
-the measurements.
+This is a small FastAPI service for measuring survey data. You upload a KML file or a zipped
+Shapefile, and it pulls out every feature along with its geometry, attributes and CRS. Polygons get
+an area in square metres and lines get a length in metres. Every measurement is taken after
+reprojecting the feature into its local UTM zone, so nothing is ever measured in degrees.
+
+Processing happens in the background. The upload returns right away, you poll the file until
+it's done, and then page through the measurements.
 
 ## Setup and run
 
-Requires Python 3.11 or newer. No system GDAL is needed: `pyogrio` ships GDAL inside its wheels.
+You need Python 3.11 or newer. You don't need to install GDAL yourself, because `pyogrio` ships
+it inside its wheels.
 
-macOS / Linux:
+On macOS or Linux:
 
 ```bash
 python -m venv .venv
@@ -20,7 +23,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Windows (PowerShell):
+On Windows (PowerShell):
 
 ```powershell
 python -m venv .venv
@@ -30,7 +33,8 @@ pip install -e ".[dev]"
 
 ### Configuration
 
-Settings come from environment variables; every one has a default for local runs.
+Everything is configured through environment variables, and each one has a default that works
+for local runs.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -40,14 +44,15 @@ Settings come from environment variables; every one has a default for local runs
 | `MAX_UNCOMPRESSED_MB` | `100` | Cap on the total uncompressed size of a zip |
 | `MAX_ZIP_ENTRIES` | `100` | Cap on the number of entries in a zip |
 
-Start the API on `http://localhost:8000` (tables are created on startup; interactive docs at
-`/docs`):
+Start the API on `http://localhost:8000`. The tables are created on startup, and the interactive
+docs are at `/docs`.
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-To create the tables up front instead (safe to run again; existing tables are left alone):
+If you'd rather create the tables up front, run this. It's safe to run more than once, since
+existing tables are left alone.
 
 ```bash
 python -m app.db
@@ -59,11 +64,12 @@ python -m app.db
 docker compose up --build
 ```
 
-This starts Postgres 16 and the API on `http://localhost:8000` with two uvicorn workers. The
-`api` container waits for Postgres to be healthy, creates the tables once with
-`python -m app.db`, then starts the workers, so they never race to create tables. Uploads wait
-in a named volume (`storage`) until processed. The image runs as a non-root user, and its
-`HEALTHCHECK` calls `GET /health`. The [API](#api) examples use the same address.
+This brings up Postgres 16 and the API on `http://localhost:8000`, running two uvicorn workers.
+The `api` container waits until Postgres is healthy, creates the tables once with
+`python -m app.db`, and only then starts the workers, so they can't race each other to create
+tables. Uploads wait in a named volume (`storage`) until they're processed. The image runs as a
+non-root user, and its `HEALTHCHECK` hits `GET /health`. The [API](#api) examples work at the
+same address.
 
 ## Run tests
 
@@ -73,31 +79,33 @@ ruff check .
 ruff format --check .
 ```
 
-Tests use a temporary SQLite database by default. To run the same suite against Postgres, point
-`TEST_DATABASE_URL` at an empty database (its tables are dropped and recreated for every test):
+By default the tests use a throwaway SQLite database. To run the same suite against Postgres,
+point `TEST_DATABASE_URL` at an empty database. Its tables are dropped and recreated before every
+test.
 
 ```bash
 TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/geo_test pytest
 ```
 
-CI (`.github/workflows/ci.yml`) runs ruff; the suite on Ubuntu and Windows with Python 3.11 and
-3.12; the suite against Postgres 16; and a Docker job that builds the image, starts the Compose
-stack and runs the upload, poll and measurements flow against it with both samples.
+CI (`.github/workflows/ci.yml`) runs ruff, then the test suite on Ubuntu and Windows with Python
+3.11 and 3.12, then the suite again against Postgres 16. A final Docker job builds the image,
+starts the Compose stack, and runs the upload, poll and measurements flow against it with both
+sample files.
 
 ## API
 
-Measurements are in metres (`length_m`) and square metres (`area_m2`).
+Lengths are in metres (`length_m`) and areas in square metres (`area_m2`).
 
-The examples below use the files in [`samples/`](samples/), which
-`python scripts/make_samples.py` regenerates:
+The examples use the two files in [`samples/`](samples/). Running
+`python scripts/make_samples.py` regenerates them.
 
-- `sample.kml`: two folders near Bengaluru. *Plots* holds an 8,000 m² plot with
-  `<ExtendedData>` and a MultiGeometry of two 2,500 m² fields sharing an edge; *Infrastructure*
-  holds a 210 m road and a well.
-- `sample_shapefile.zip`: three fields in EPSG:32643 (UTM 43N) with an ESRI-style `.prj`. One has
-  a 20 m x 20 m pond (a hole); one has a self-intersecting boundary.
+- `sample.kml` has two folders of features near Bengaluru. *Plots* contains an 8,000 m² plot
+  with `<ExtendedData>` attributes, plus a MultiGeometry of two 2,500 m² fields that share an
+  edge. *Infrastructure* contains a 210 m road and a well.
+- `sample_shapefile.zip` has three fields in EPSG:32643 (UTM 43N) with an ESRI-style `.prj`.
+  One field has a 20 m x 20 m pond cut out of it, and one has a boundary that crosses itself.
 
-The whole flow, copy-pasteable (bash; the id is captured from the upload response):
+Here's the whole flow in one go. It's bash, and it grabs the id from the upload response:
 
 ```bash
 ID=$(curl -s -F "file=@samples/sample.kml" http://localhost:8000/api/files/ \
@@ -112,10 +120,10 @@ curl -s "http://localhost:8000/api/files/$ID/measurements/?limit=100&offset=0"
 
 ### Upload: `POST /api/files/`
 
-Send the file as multipart field `file`: a `.kml`, or a `.zip` holding one Shapefile.
-The upload is checked and stored, and the response comes back straight away with **202
-Accepted** and status `PENDING`. Reading and measuring happen in the background; the
-`Location` header is the URL to poll.
+Send the file in a multipart field called `file`. It can be a `.kml`, or a `.zip` containing one
+Shapefile. The server checks and stores the upload, then answers straight away with
+**202 Accepted** and a status of `PENDING`. The actual reading and measuring happen afterwards,
+and the `Location` header tells you where to poll.
 
 ```bash
 curl -i -F "file=@samples/sample.kml" http://localhost:8000/api/files/
@@ -132,8 +140,9 @@ location: /api/files/2446a85c-11d5-458c-9e9c-380c12c6e9ff/
 
 ### Poll: `GET /api/files/{id}/`
 
-Poll the `Location` URL until `status` is `COMPLETED` or `FAILED` (`PENDING` and `PROCESSING`
-come first). `crs` is the source file's CRS; `error` explains a `FAILED` file.
+Keep calling the `Location` URL until `status` turns into `COMPLETED` or `FAILED`. Before that
+you'll see `PENDING` and then `PROCESSING`. `crs` is the CRS of the uploaded file, and `error`
+explains what went wrong if it failed.
 
 ```bash
 curl http://localhost:8000/api/files/2446a85c-11d5-458c-9e9c-380c12c6e9ff/
@@ -144,13 +153,14 @@ curl http://localhost:8000/api/files/2446a85c-11d5-458c-9e9c-380c12c6e9ff/
  "crs": "EPSG:4326", "status": "COMPLETED", "error": null}
 ```
 
-For the shapefile, `crs` is `"EPSG:32643"`, identified from the ESRI WKT in its `.prj`.
+For the shapefile you'd get `"crs": "EPSG:32643"`, worked out from the ESRI WKT in its `.prj`.
 
 ### Measurements: `GET /api/files/{id}/measurements/?limit=100&offset=0`
 
-One entry per feature, ordered by `index`. `limit` is 1 to 1000 (default 100) and `offset` is 0
-or more; `total` is the file's feature count. `geometry` is GeoJSON in EPSG:4326 whatever the
-source CRS, and `source_crs` records what the file used. `measurement.crs` is the UTM zone the
+You get one entry per feature, ordered by `index`. `limit` can be anything from 1 to 1000
+(default 100), `offset` starts at 0, and `total` is the number of features in the file.
+`geometry` always comes back as GeoJSON in EPSG:4326, whatever the source CRS was, and
+`source_crs` tells you what the file originally used. `measurement.crs` is the UTM zone the
 feature was measured in.
 
 ```bash
@@ -174,14 +184,15 @@ curl "http://localhost:8000/api/files/2446a85c-11d5-458c-9e9c-380c12c6e9ff/measu
 }
 ```
 
-The self-intersecting field in the shapefile (`?offset=2&limit=1`) is reported, not measured:
+The self-intersecting field in the shapefile (`?offset=2&limit=1`) is reported, but it isn't
+measured:
 
 ```json
 "measurement": {"status": "INVALID", "area_m2": null, "length_m": null, "crs": null,
                 "reason": "Self-intersection[77.5947582942158 12.970004698885]", "warnings": []}
 ```
 
-`measurement.status` is one of:
+Every feature ends up with one of these statuses:
 
 | Status | Meaning |
 |---|---|
@@ -192,13 +203,14 @@ The self-intersecting field in the shapefile (`?offset=2&limit=1`) is reported, 
 
 ### Health: `GET /health`
 
-Runs `SELECT 1` against the database: **200** `{"status": "ok"}`, or **503**
-`{"status": "unavailable"}` when the database cannot be reached. Used by Docker and load
-balancer health checks.
+This runs `SELECT 1` against the database. It returns **200** `{"status": "ok"}` when the
+database answers and **503** `{"status": "unavailable"}` when it doesn't. Docker and load
+balancers use it as their health check.
 
 ### Errors
 
-Errors use FastAPI's `{"detail": "..."}` body. Messages never include server paths.
+Errors come back in FastAPI's usual `{"detail": "..."}` shape. The messages are written for
+clients, so they never include server paths or stack traces.
 
 | Situation | Code |
 |---|---|
@@ -209,9 +221,10 @@ Errors use FastAPI's `{"detail": "..."}` body. Messages never include server pat
 | Missing `file` field, bad `limit`/`offset` | 422 |
 | Database unreachable (`/health` only) | 503 |
 
-Oversized uploads are rejected from the `Content-Length` header before the body is read; a
-byte count while saving is the backstop for requests without that header. In production,
-also cap the body size at the reverse proxy (for example nginx `client_max_body_size`).
+Oversized uploads are turned away based on the `Content-Length` header, before the body is
+read. Requests that don't send that header are still capped, because the server counts bytes
+as it saves. In production I'd also limit the body size at the reverse proxy (for example
+nginx's `client_max_body_size`).
 
 ## Architecture
 
@@ -239,8 +252,8 @@ tests/              unit tests for core/, service tests, API tests; fixtures bui
 samples/            sample.kml and sample_shapefile.zip (regenerate: scripts/make_samples.py)
 ```
 
-`core/` can be imported and tested with no web server or database, so the geospatial logic is
-tested on its own.
+I kept `core/` free of any web or database code. That way the geospatial logic, which is the
+part most likely to have subtle bugs, can be tested on its own without starting anything.
 
 ### File-processing flow
 
@@ -269,150 +282,206 @@ GET /api/files/{id}/               poll until COMPLETED or FAILED
 GET /api/files/{id}/measurements/  409 until COMPLETED, then paginated features
 ```
 
-Reading details:
+A few details about reading the files:
 
-- **KML:** every `<Folder>` is a layer, and placemarks outside any folder form one more layer,
-  named after the stored file (`upload`). GDAL opens KML with its LIBKML driver, so
-  `<ExtendedData>` values (`<Data>` and `<SchemaData>`) become properties. LIBKML's display
-  settings (`tessellate`, `visibility`, `icon`, ...) are dropped because they are not
-  attributes. The CRS of a KML file is always EPSG:4326, as the KML specification requires.
-- **Shapefile:** the zip must hold exactly one `.shp` with its `.shx`, `.dbf` and `.prj`
-  (`.cpg` optional) in the same folder. The CRS comes from the `.prj`, including the ESRI WKT
-  that ArcGIS writes; a missing or unreadable `.prj` is rejected rather than guessed.
-- **Zip safety:** entry count and declared uncompressed size are capped; entries with `..`,
-  absolute paths or symlink attributes are rejected; the Shapefile parts are copied to fixed
-  names (`data.shp`, ...) while counting the real bytes written. Nothing in the archive chooses
-  where files land, and a member that lies about its size is rejected.
-- **Indices:** features are numbered globally from 0, in layer order and then feature order. A
-  placemark without geometry is kept (it becomes `UNSUPPORTED`), so indices always match the
-  source file.
-- **Properties:** made JSON-safe: numpy scalars become Python numbers, NaN becomes `null`,
-  dates and timestamps become ISO 8601 strings, bytes are decoded. A value that cannot be
-  converted never fails the file.
+- In a KML file, every `<Folder>` becomes a layer. Placemarks that sit outside any folder end up
+  in one extra layer, named after the stored file (`upload`). GDAL opens KML with its LIBKML
+  driver, which turns `<ExtendedData>` (both `<Data>` and `<SchemaData>`) into properties. LIBKML
+  also adds display settings such as `tessellate`, `visibility` and `icon` to every feature. I
+  drop those, since they describe how Google Earth draws the shape rather than anything about
+  the feature. The KML spec says coordinates are always EPSG:4326, so that's what the CRS is set
+  to.
+- A Shapefile zip has to contain exactly one `.shp`, with its `.shx`, `.dbf` and `.prj` next to
+  it in the same folder (a `.cpg` is optional). The CRS is read from the `.prj`, including the
+  ESRI-flavoured WKT that ArcGIS writes. If the `.prj` is missing or can't be read, the upload
+  is rejected. I didn't want to guess a CRS and return confident numbers that are wrong.
+- Zips are treated as untrusted. There's a cap on the number of entries and on the total
+  uncompressed size, and entries with `..`, absolute paths or symlinks are rejected. The
+  Shapefile parts are then copied out under fixed names (`data.shp` and so on), counting the
+  real bytes as they go. Nothing inside the archive gets to decide where files land on disk,
+  and a member that lies about its size gets caught.
+- Features are numbered from 0 across the whole file, in layer order and then feature order. A
+  placemark without a geometry is kept, and its status is `UNSUPPORTED`. That way the indices
+  always line up with the source file.
+- Attribute values are cleaned up so they're safe to store as JSON. Numpy numbers become plain
+  Python numbers, NaN becomes `null`, dates and timestamps become ISO 8601 strings, and bytes
+  are decoded. A value that can't be converted is never a reason to fail the file.
 
 ### Measurement flow
 
-`measure_geometry` in `app/core/measure.py` takes one EPSG:4326 geometry and never raises for
-bad input. The first matching rule wins:
+`measure_geometry` in `app/core/measure.py` takes a single EPSG:4326 geometry and decides what
+to do with it. Bad input never makes it raise. It works through these rules and stops at the
+first one that matches:
 
-1. No geometry, or an empty one: `UNSUPPORTED`.
-2. Z values are dropped for measuring (warning `Z_IGNORED`); the GeoJSON output keeps them.
-3. `GeometryCollection` (what GDAL makes of a KML `<MultiGeometry>` with mixed members): all
-   polygons, all lines or all points are measured as the matching multi-geometry, with warning
-   `NORMALIZED_FROM_GEOMETRYCOLLECTION`. Mixed or nested collections are `UNSUPPORTED`, with a
-   reason naming the member types.
-4. Point / MultiPoint: `NO_MEASUREMENT_REQUIRED`.
-5. Polygon / MultiPolygon: each part is validated **on its own**. If any part is invalid (for
-   example self-intersecting), the feature is `INVALID` with the reason from GEOS and no
-   numbers. Otherwise the area is the sum of the parts' areas, holes subtracted.
-6. LineString / MultiLineString: length.
-7. Anything else: `UNSUPPORTED`, naming the type.
+1. If there's no geometry, or it's empty, the feature is `UNSUPPORTED`.
+2. Z values are dropped before measuring, and the feature gets a `Z_IGNORED` warning. The
+   GeoJSON output still keeps them.
+3. A `GeometryCollection` is what GDAL produces from a KML `<MultiGeometry>` with mixed members.
+   If every member is a polygon, or every member is a line, or every member is a point, it's
+   treated as the matching multi-geometry and gets the warning
+   `NORMALIZED_FROM_GEOMETRYCOLLECTION`. A mixed or nested collection is `UNSUPPORTED`, and the
+   reason names the member types.
+4. Points and MultiPoints are `NO_MEASUREMENT_REQUIRED`.
+5. For a Polygon or MultiPolygon, each part is validated on its own. If any part is invalid
+   (self-intersecting, for example), the whole feature is `INVALID`. The reason comes from GEOS,
+   and no numbers are returned. Otherwise the area is the sum of the parts' areas, with holes
+   subtracted.
+6. LineStrings and MultiLineStrings get a length.
+7. Anything else is `UNSUPPORTED`, and the reason names the type.
 
-Before measuring (rules 5 and 6), the UTM zone is chosen from the centre of the geometry's
-bounding box. A bounding box wider than 180° of longitude (crosses the antimeridian) or a
-latitude outside 80°S to 84°N is `UNSUPPORTED`. If the geometry reaches more than 4° from the
-zone's central meridian, warning `FAR_FROM_CENTRAL_MERIDIAN` is added. Polygons report
-`area_m2` (m²) and lines `length_m` (m); the other field is `null`.
+For polygons and lines, the UTM zone is chosen from the centre of the geometry's bounding box.
+Some features can't be measured this way. If the bounding box is more than 180° wide, the
+feature crosses the antimeridian. If it falls outside 80°S to 84°N, UTM isn't defined there.
+Both cases are `UNSUPPORTED`. If a feature stretches more than 4° away from its zone's central
+meridian, it gets a `FAR_FROM_CENTRAL_MERIDIAN` warning, because the distortion grows towards
+the zone's edges. Polygons fill in `area_m2` (m²) and lines fill in `length_m` (m); the other
+field stays `null`.
 
 ### CRS handling
 
-**Never measure in degrees.** A degree of longitude is about 108.5 km wide at 13°N
-(Bengaluru) but only about 55.7 km at 60°N, so an "area in square degrees" has no fixed
-meaning. Every geometry takes the same path:
+The one rule I didn't want to break is that nothing gets measured in degrees. A degree of
+longitude is about 108.5 km wide at 13°N (Bengaluru) but only about 55.7 km at 60°N, so an
+"area in square degrees" doesn't mean anything on its own. Every geometry goes down the same
+path:
 
 ```
 source CRS --(one vectorized call per file)--> EPSG:4326 --(per feature)--> WGS 84 / UTM zone
 ```
 
-- **Source CRS:** KML is always EPSG:4326. A Shapefile's CRS comes from its `.prj`; ESRI WKT
-  such as `GCS_WGS_1984` or `WGS_1984_UTM_Zone_43N` is identified as `EPSG:4326` /
-  `EPSG:32643`. A CRS with no EPSG code is reported as `WKT:<name>` and transformed from its
-  full WKT.
-- **Zone:** `zone = floor((lon + 180) / 6) + 1`; the EPSG code is `32600 + zone` in the
-  northern hemisphere and `32700 + zone` in the southern. Bengaluru (77.59°E, 12.97°N) is zone
-  43N, `EPSG:32643`; the same longitude at 12.97°S would be `EPSG:32743`.
-- **Axis order:** every `pyproj.Transformer` is built with `always_xy=True`, so coordinates are
-  always (longitude, latitude). Without it, EPSG:4326's official latitude-first axis order
-  silently swaps the axes. Transformers are cached, not rebuilt per feature.
-- **Projected sources are reprojected too.** A Shapefile already "in metres" is not measured
-  in its own CRS: Web Mercator (EPSG:3857), common in web-exported data, inflates areas by
-  about 1/cos²(latitude), around 5% at 13°N and 4x at 60°N. Every input goes through the same
-  path, with no special cases. A test delivers a true 1 km² square as an EPSG:3857 Shapefile
-  and checks the result is within 0.25% of 1,000,000 m².
-- **Accuracy:** UTM is conformal, not equal-area. Its scale error is about 0.1% at 2.6° from
-  the central meridian, which the tests allow for (0.25%). Results are cross-checked against
-  geodesic areas from `pyproj.Geod` in the tests.
+KML is always EPSG:4326. For a Shapefile, the CRS comes from the `.prj`. ESRI WKT names such as
+`GCS_WGS_1984` and `WGS_1984_UTM_Zone_43N` are recognised as `EPSG:4326` and `EPSG:32643`. If a
+CRS has no EPSG code at all, it's reported as `WKT:<name>` and transformed using its full WKT.
+
+The zone number is `floor((lon + 180) / 6) + 1`. The EPSG code is `32600 + zone` north of the
+equator and `32700 + zone` south of it. Bengaluru (77.59°E, 12.97°N) is in zone 43N, which is
+`EPSG:32643`. The same longitude at 12.97°S would be `EPSG:32743`.
+
+Axis order is an easy thing to get wrong. Officially EPSG:4326 lists latitude first, so a naive
+transform quietly swaps the coordinates. Every `pyproj.Transformer` here is created with
+`always_xy=True`, so coordinates are always (longitude, latitude). Transformers are cached
+rather than rebuilt for each feature.
+
+Shapefiles that are already "in metres" go through the same reprojection. They aren't measured
+in their own CRS, and there's no special case for them. Web Mercator (EPSG:3857), which is
+common in data exported from web maps, inflates areas by roughly 1/cos²(latitude). That's about
+5% at 13°N and four times the real area at 60°N. One of the tests delivers a true 1 km² square
+as an EPSG:3857 Shapefile and checks that the result lands within 0.25% of 1,000,000 m².
+
+UTM keeps angles correct, but it doesn't preserve area exactly. Its scale error is about 0.1%
+at 2.6° from the central meridian. The tests allow 0.25% to cover this, and they cross-check
+the results against geodesic areas from `pyproj.Geod`.
 
 ### Scaling
 
-- **Processing outside the request.** The upload request only does cheap checks and returns
-  202; reading and measuring run in a background task, so slow files don't hold HTTP
-  connections. Endpoints and the job are plain `def`, so blocking work runs in the threadpool,
-  not on the event loop.
-- **Seam to a job queue.** `process_file(file_id, session_factory, settings)` takes no request
-  objects; it reads only from storage and the database. A Celery/RQ/arq worker could call the
-  same function: moving to a queue changes the dispatcher, not the job.
-- **Stateless API, shared database.** API processes keep no state between requests, so several
-  can run behind a load balancer against one Postgres database; Docker Compose runs two
-  workers this way. Each process handles the uploads it received, so `STORAGE_DIR` can be
-  local to the process's machine.
-- **Upload limits before the body is read.** Starlette parses the whole multipart body before
-  the route runs, so a check in the route would come after a 5 GB upload had already been
-  read. An ASGI middleware rejects the request from its `Content-Length` header instead (with
-  a 64 KiB allowance for multipart framing); the byte count while saving is the exact cap and
-  covers requests without that header.
-- **Database work in bulk.** Features are inserted in one batched `INSERT`; the measurements
-  query pages through the `(file_id, idx)` unique index.
+The upload request only does the cheap checks and then returns 202. Reading and measuring
+happen in a background task, so a slow file doesn't tie up an HTTP connection. The endpoints
+and the job are plain `def` functions rather than `async def`. That way FastAPI runs the
+blocking work in its threadpool instead of on the event loop.
+
+`process_file(file_id, session_factory, settings)` doesn't take any request objects. It only
+reads from storage and the database. That's deliberate: a Celery, RQ or arq worker could call
+exactly the same function, so moving to a real queue would only change how the job is
+dispatched, not the job itself.
+
+The API processes don't keep any state between requests, so you can run several of them behind
+a load balancer against one Postgres database. Docker Compose already runs two workers this way.
+Each process handles the uploads it received itself, which is why `STORAGE_DIR` can live on that
+process's own machine.
+
+Limiting upload size is subtler than it looks. Starlette parses the whole
+multipart body before the route runs, so a size check inside the route would only happen after
+a 5 GB upload had already been read. Instead, a small ASGI middleware rejects the request from
+its `Content-Length` header. It allows an extra 64 KiB for the multipart framing. The byte count
+during saving then enforces the exact limit, and it also covers requests that don't send
+`Content-Length`.
+
+On the database side, all of a file's features are written in one batched `INSERT`, and the
+measurements query pages through the `(file_id, idx)` unique index.
 
 ## Design decisions and alternatives
 
-| Decision | Alternatives considered | Why |
-|---|---|---|
-| Process in a FastAPI `BackgroundTasks` job, return 202 | Process inside the request; a full queue (Celery/RQ + Redis) | In-request processing ties up the connection and times out on large files. A queue adds a broker and worker deployment this scope does not need yet; `process_file` is already shaped so a queue worker can call it unchanged. |
-| Per-feature UTM zone | Geodesic area with `pyproj.Geod`; per-feature Lambert azimuthal equal-area | The task asks for projected measurement; UTM is the survey convention and its EPSG code is easy to check by hand. Geodesic measurement serves as the test oracle. An equal-area projection removes area distortion but has no standard code per feature. The zone choice is one function, so swapping is small. |
-| SQLite by default, Postgres supported | Postgres only | SQLite needs no setup for local runs and tests. Several API processes need Postgres (SQLite allows one writer at a time and lives on one machine). The same models run on both, and CI runs the suite on both. |
-| `pyogrio` raw reads | `fiona`, `geopandas` | `pyogrio` ships GDAL in its wheels (no system install on Linux, macOS or Windows), and its raw API returns WKB and plain arrays without pulling in pandas. |
-| Exactly one Shapefile per zip | Accept several and merge | One Shapefile gives one CRS and one clear feature numbering. Several Shapefiles per zip is future scope. |
-| `INVALID` with a reason | `make_valid`, then measure the result | `make_valid` silently changes the shape (a bowtie becomes two triangles), so the area would describe a shape nobody drew. A wrong number is worse than none. |
-| Normalize homogeneous GeometryCollections only | Reject every collection; measure mixed ones partially | Google Earth exports use `<MultiGeometry>` often, and all-polygon or all-line collections have one obvious measurement. A polygon plus a line has no single meaningful number. |
-| Validate MultiPolygon parts one by one | `MultiPolygon.is_valid` | Shapely treats parts that share an edge as invalid, but adjacent fields are normal in survey data. |
-| GeoJSON output in EPSG:4326 | Geometry in the source CRS | RFC 7946 GeoJSON is lon/lat WGS 84, which every web map reads; `source_crs` keeps the original CRS visible. |
-| Content-Length middleware for the size limit | Count bytes in the route | The route runs only after the whole body has been parsed to a temp file. |
-| `create_all` at startup and in `python -m app.db` | Alembic migrations | Two tables and no production data to migrate yet. Alembic is future scope. |
+**Background tasks instead of processing in the request or using a full queue.** Processing
+inside the request ties up the connection and times out on big files. A proper queue like Celery
+or RQ with Redis would need a broker and a separate worker deployment, which felt like too much
+for this scope. FastAPI's `BackgroundTasks` sits in between, and since `process_file` is already
+shaped like a queue job, switching later is a small change.
+
+**UTM per feature instead of geodesic or equal-area measurement.** The task asks for measurement
+in a projected CRS, and UTM is what surveyors normally use. Its EPSG codes are also easy to
+sanity-check by hand. `pyproj.Geod` gives very accurate geodesic areas, so I use it as the
+reference in the tests rather than in the service. A per-feature Lambert azimuthal equal-area
+projection would remove the area error completely, but it has no standard code you could report
+per feature. Choosing the zone is a single function, so swapping the method later is a small
+job.
+
+**SQLite by default, Postgres when it matters.** SQLite needs no setup, which keeps local runs
+and tests simple. Running several API processes needs Postgres, because SQLite only allows one
+writer at a time and lives on a single machine. The models only use types that work on both, and
+CI runs the full test suite against each.
+
+**`pyogrio` instead of `fiona` or `geopandas`.** `pyogrio` bundles GDAL in its wheels, so there's
+nothing to install system-wide on Linux, macOS or Windows. Its raw API hands back WKB and plain
+arrays without pulling in pandas, which is all this service needs.
+
+**One Shapefile per zip.** A single Shapefile means a single CRS and an unambiguous feature
+numbering. Supporting several Shapefiles per zip is in the future scope.
+
+**`INVALID` instead of `make_valid`.** `make_valid` quietly changes the shape. A bowtie, for
+example, becomes two triangles, so the area you get back belongs to a shape nobody actually drew.
+I'd rather return no number and a clear reason than a confident wrong one.
+
+**Normalizing only collections where every member is the same kind.** Google Earth exports use
+`<MultiGeometry>` a lot. A collection of only polygons, or only lines, has one obvious
+measurement. A polygon plus a line doesn't add up to any single meaningful number, so those are
+reported as unsupported.
+
+**Validating MultiPolygon parts one at a time.** Shapely considers a MultiPolygon invalid when
+two of its parts share an edge. In survey data that's completely normal, because neighbouring
+fields share a boundary, so each part is checked separately.
+
+**GeoJSON output in EPSG:4326.** GeoJSON (RFC 7946) is defined as WGS 84 longitude/latitude,
+and every web map can read it. `source_crs` sits alongside it so the original CRS isn't lost.
+
+**A Content-Length middleware for the size limit.** The route only runs once the whole body has
+already been parsed into a temporary file, so checking there is too late (see Scaling).
+
+**`create_all` instead of Alembic.** There are two tables and no production data to migrate yet.
+Migrations are in the future scope.
 
 ## Known limitations
 
-- UTM is not equal-area: about 0.1% error 2.6° from a zone's central meridian, more toward the
-  zone edges (flagged with `FAR_FROM_CENTRAL_MERIDIAN`). A feature spanning several zones is
-  still measured in the single zone at its centre.
-- Features crossing the antimeridian, and features outside 80°S to 84°N (where UTM is not
-  defined), are `UNSUPPORTED`.
-- The Norway and Svalbard UTM zone exceptions are ignored; the plain 6° grid is used.
-- Mixed GeometryCollections (for example a polygon and a line in one `<MultiGeometry>`) are
+- UTM doesn't preserve area exactly. The error is about 0.1% at 2.6° from a zone's central
+  meridian, and it grows towards the zone edges, which is what `FAR_FROM_CENTRAL_MERIDIAN` flags.
+  A feature that spans several zones is still measured in the one zone at its centre.
+- Features that cross the antimeridian, or that lie outside 80°S to 84°N where UTM isn't defined,
+  are `UNSUPPORTED`.
+- The Norway and Svalbard exceptions to the UTM grid are ignored. The plain 6° zones are used
+  everywhere.
+- Mixed GeometryCollections, such as a polygon and a line in the same `<MultiGeometry>`, are
   `UNSUPPORTED`.
-- Overlapping parts of a MultiPolygon or polygon collection are counted twice, because the
-  area is the sum of the parts.
-- KML attributes depend on the LIBKML driver bundled in the `pyogrio` wheels. When a file
-  declares a `<Schema>`, LIBKML drops untyped `<Data>` values on that layer.
+- If parts of a MultiPolygon or polygon collection overlap, the overlap is counted twice,
+  because the area is the sum of the parts.
+- KML attributes rely on the LIBKML driver that comes with the `pyogrio` wheels. When a file
+  declares a `<Schema>`, LIBKML drops any untyped `<Data>` values on that layer.
 - Integer attributes with missing values come back as floats (`3` becomes `3.0`), because GDAL
-  reads the column as floating point to represent the gaps.
-- `BackgroundTasks` is not durable: if a process dies mid-job, its file stays `PROCESSING`
-  (`updated_at` shows when it stalled), and there is no retry.
-- Uploads are stored on the machine of the process that received them, so the job must run in
+  reads the column as floating point so it can represent the gaps.
+- `BackgroundTasks` isn't durable. If a process dies in the middle of a job, that file stays
+  `PROCESSING` forever (`updated_at` shows when it stalled), and nothing retries it.
+- Uploads are stored on the machine of the process that received them, so the job has to run in
   that same process.
-- Tables are created with `create_all`; there are no migrations.
-- There is no authentication or rate limiting.
+- Tables are created with `create_all`, and there are no migrations.
+- There's no authentication or rate limiting.
 
 ## Future scope
 
-- A durable job queue with retries (Celery, RQ or arq) and a reaper for jobs stuck in
-  `PROCESSING`.
-- Shared object storage (S3 or similar) so separate worker machines can process uploads.
-- PostGIS geometry columns and spatial indexes; Alembic migrations.
-- Streaming or batched reading (`pyogrio`'s Arrow API) for files beyond the size cap, and
-  grouping features by UTM zone to reproject each group in one vectorized call.
-- More inputs: KMZ, GeoJSON, GeoPackage, several Shapefiles per zip, mixed
+- A durable job queue with retries (Celery, RQ or arq), plus something that picks up jobs stuck
+  in `PROCESSING`.
+- Shared object storage such as S3, so separate worker machines can process uploads.
+- PostGIS geometry columns with spatial indexes, and Alembic migrations.
+- Streaming or batched reading with `pyogrio`'s Arrow API for files bigger than the size cap.
+  Grouping features by UTM zone would also allow reprojecting each group in one vectorized call.
+- More input formats: KMZ, GeoJSON, GeoPackage, several Shapefiles per zip, and mixed
   GeometryCollections.
-- A selectable measurement method (UTM, equal-area or geodesic), and perimeter for polygons.
-- Filtering (for example by status) and cursor pagination.
-- Authentication and rate limiting; optional retention of original uploads.
+- A choice of measurement method (UTM, equal-area or geodesic), and perimeters for polygons.
+- Filtering, for example by status, and cursor-based pagination.
+- Authentication and rate limiting, and optionally keeping the original uploads.

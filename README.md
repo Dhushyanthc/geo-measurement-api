@@ -36,7 +36,14 @@ Settings come from environment variables; every one has a default for local runs
 | `MAX_UNCOMPRESSED_MB` | `100` | Cap on the total uncompressed size of a zip |
 | `MAX_ZIP_ENTRIES` | `100` | Cap on the number of entries in a zip |
 
-Create the tables (safe to run again; existing tables are left alone):
+Start the API on `http://localhost:8000` (tables are created on startup; interactive docs at
+`/docs`):
+
+```bash
+uvicorn app.main:app --reload
+```
+
+To create the tables up front instead (safe to run again; existing tables are left alone):
 
 ```bash
 python -m app.db
@@ -56,6 +63,39 @@ Tests use a temporary SQLite database by default. To run the same suite against 
 ```bash
 TEST_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/geo_test pytest
 ```
+
+## API
+
+Measurements are in metres (`length_m`) and square metres (`area_m2`).
+
+### Upload: `POST /api/files/`
+
+Send the file as multipart field `file`: a `.kml`, or a `.zip` holding one Shapefile.
+The upload is checked and stored, and the response comes back straight away with **202
+Accepted** and status `PENDING`. Reading and measuring happen in the background; the
+`Location` header is the URL to poll.
+
+```bash
+curl -i -F "file=@survey.kml" http://localhost:8000/api/files/
+```
+
+```http
+HTTP/1.1 202 Accepted
+location: /api/files/3bdc269a-f272-4d85-8dee-ed2347db4e09/
+
+{"id": "3bdc269a-f272-4d85-8dee-ed2347db4e09", "filename": "survey.kml", "feature_count": 0,
+ "crs": null, "status": "PENDING", "error": null}
+```
+
+| Situation | Code |
+|---|---|
+| Wrong extension, corrupt zip, no or several `.shp`, missing `.shx`/`.dbf`/`.prj`, unsafe zip | 400 |
+| Upload larger than `MAX_UPLOAD_MB` | 413 |
+| No `file` field | 422 |
+
+Oversized uploads are rejected from the `Content-Length` header before the body is read; a
+byte count while saving is the backstop for requests without that header. In production,
+also cap the body size at the reverse proxy (for example nginx `client_max_body_size`).
 
 ## Architecture
 

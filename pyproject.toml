@@ -44,4 +44,6 @@ testpaths = ["tests"]
 filterwarnings = [
     # Raised inside pyogrio's reader on numpy >= 2.5, not by this project's code.
     "ignore:The 'generic' unit for NumPy timedelta is deprecated:DeprecationWarning:pyogrio",
+    # Starlette 1.x nudges TestClient users towards httpx2; httpx still works.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
 ]

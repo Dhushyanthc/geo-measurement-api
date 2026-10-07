@@ -1,8 +1,10 @@
 """Engine and session setup. `python -m app.db` creates the tables and exits."""
 
 import logging
+from collections.abc import Iterator
 from typing import Any
 
+from fastapi import Request
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -41,6 +43,12 @@ def make_session_factory(engine: Engine) -> sessionmaker[Session]:
 def init_db(engine: Engine) -> None:
     """Create any missing tables. Safe to run repeatedly."""
     Base.metadata.create_all(engine)
+
+
+def get_session(request: Request) -> Iterator[Session]:
+    """FastAPI dependency: one session per request, from the app's own factory."""
+    with request.app.state.session_factory() as session:
+        yield session
 
 
 if __name__ == "__main__":

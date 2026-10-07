@@ -11,11 +11,16 @@ from typing import BinaryIO
 
 logger = logging.getLogger(__name__)
 
-CHUNK_BYTES = 1024 * 1024
+_MIB = 1024 * 1024
+CHUNK_BYTES = _MIB
 
 
 class UploadTooLarge(Exception):
     """The upload is over the size limit. The message is safe to show the client."""
+
+
+def too_large_message(max_bytes: int) -> str:
+    return f"The file is larger than the {max_bytes / _MIB:g} MB upload limit."
 
 
 def upload_dir(storage_dir: Path, file_id: str) -> Path:
@@ -34,7 +39,7 @@ def save_stream(src: BinaryIO, dest: Path, max_bytes: int) -> int:
         while chunk := src.read(CHUNK_BYTES):
             written += len(chunk)
             if written > max_bytes:
-                raise UploadTooLarge("The file is larger than the upload limit.")
+                raise UploadTooLarge(too_large_message(max_bytes))
             out.write(chunk)
     return written
 
